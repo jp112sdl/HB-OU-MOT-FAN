@@ -148,9 +148,26 @@ class MixDevType : public ChannelDevice<HalType, VirtBaseChannel<HalType, List0>
     }
 };
 
+class FAN {
+  uint8_t  pin;
+public:
+  FAN () : pin(0) {}
+  ~FAN () {}
+
+  void init(uint8_t p) {
+    pin = p;
+    pinMode(pin,OUTPUT);
+  }
+  void set(uint8_t value) {
+    uint8_t pwm = 0;
+    pwm = value > 0 ? map(value, 1, 200, 32, 255) : 0;
+    analogWrite(pin,pwm);
+  }
+};
+
 HalType hal;
 MixDevType sdev(devinfo,0x20);
-DimmerControl<HalType,MixDevType,PWM8<> > control(sdev);
+DimmerControl<HalType,MixDevType,FAN > control(sdev);
 ConfigToggleButton<MixDevType> cfgBtn(sdev);
 
 void setup () {

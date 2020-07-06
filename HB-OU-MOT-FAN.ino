@@ -149,9 +149,10 @@ class MixDevType : public ChannelDevice<HalType, VirtBaseChannel<HalType, List0>
 };
 
 class FAN {
-  uint8_t  pin;
+  uint8_t pin;
+  uint8_t last_value;
 public:
-  FAN () : pin(0) {}
+  FAN () : pin(0), last_value(0) {}
   ~FAN () {}
 
   void init(uint8_t p) {
@@ -160,14 +161,20 @@ public:
   }
   void set(uint8_t value) {
     uint8_t pwm = 0;
+    DPRINT("SET ");DDECLN(value);
+    if (last_value == 0) {
+      analogWrite(pin,255); // give the motor a short full power pulse to start (for lower speeds)
+      //delay(250);
+    }
     pwm = value > 0 ? map(value, 1, 200, 32, 255) : 0;
+    last_value = value;
     analogWrite(pin,pwm);
   }
 };
 
 HalType hal;
 MixDevType sdev(devinfo,0x20);
-DimmerControl<HalType,MixDevType,FAN > control(sdev);
+DimmerControl<HalType,MixDevType,FAN> control(sdev);
 ConfigToggleButton<MixDevType> cfgBtn(sdev);
 
 void setup () {

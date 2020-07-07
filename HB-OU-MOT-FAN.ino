@@ -19,7 +19,8 @@
 
 #define LED_PIN           4
 #define CONFIG_BUTTON_PIN 8
-#define FAN_PIN           3
+#define FAN_PIN           9 // 9 on 644PA (Bobuino Pinout) or 3 on 328P
+#define USE_25KHZ
 
 #define PEERS_PER_CHANNEL    4
 #define WEATHER_MSG_INTERVAL 180
@@ -29,30 +30,30 @@
 using namespace as;
 
 const struct DeviceInfo PROGMEM devinfo = {
-    {0xf3,0x49,0x01},       // Device ID
-    "JPFAN00001",           // Device Serial
-    {0xf3,0x49},            // Device Model
-    0x01,                   // Firmware Version
-    as::DeviceType::Dimmer, // Device Type
-    {0x01,0x00}             // Info Bytes
+  {0xf3, 0x49, 0x01},     // Device ID
+  "JPFAN00001",           // Device Serial
+  {0xf3, 0x49},           // Device Model
+  0x01,                   // Firmware Version
+  as::DeviceType::Dimmer, // Device Type
+  {0x01, 0x00}            // Info Bytes
 };
 
-typedef AvrSPI<10,11,12,13> SPIType;
-typedef Radio<SPIType,2> RadioType;
+typedef AvrSPI<10, 11, 12, 13> SPIType;
+typedef Radio<SPIType, 2> RadioType;
 typedef StatusLed<LED_PIN> LedType;
-typedef AskSin<LedType,NoBattery,RadioType> HalType;
+typedef AskSin<LedType, NoBattery, RadioType> HalType;
 
 /*DEFREGISTER(Reg0,DREG_INTKEY,MASTERID_REGS,DREG_TRANSMITTRYMAX)
-class MixDevList0 : public RegList0<Reg0> {
-public:
+  class MixDevList0 : public RegList0<Reg0> {
+  public:
   MixDevList0(uint16_t addr) : RegList0<Reg0>(addr) {}
   void defaults () {
     clear();
     transmitDevTryMax(6);
   }
-};*/
+  };*/
 
-typedef DimmerChannel<HalType,PEERS_PER_CHANNEL, List0> DimmerChannelType;
+typedef DimmerChannel<HalType, PEERS_PER_CHANNEL, List0> DimmerChannelType;
 
 /*class WeatherEventMsg : public Message {
   public:
@@ -65,9 +66,9 @@ typedef DimmerChannel<HalType,PEERS_PER_CHANNEL, List0> DimmerChannelType;
       Message::init(0xc, msgcnt, 0x70, BIDI | WKMEUP, t1, t2);
       pload[0] = humidity;
     }
-};
+  };
 
-class WeatherChannel : public Channel<HalType, List1, EmptyList, List4, PEERS_PER_CHANNEL, MixDevList0>, public Alarm {
+  class WeatherChannel : public Channel<HalType, List1, EmptyList, List4, PEERS_PER_CHANNEL, MixDevList0>, public Alarm {
     WeatherEventMsg msg;
     int16_t         temp;
     uint8_t         humidity;
@@ -100,10 +101,10 @@ class WeatherChannel : public Channel<HalType, List1, EmptyList, List4, PEERS_PE
 
     uint8_t status () const { return 0; }
     uint8_t flags  () const { return 0; }
-};*/
+  };*/
 
 /*class SwChannel : public SwitchChannel<HalType,PEERS_PER_CHANNEL,MixDevList0> {
-public:
+  public:
   SwChannel () {};
   virtual ~SwChannel () {};
 
@@ -119,13 +120,13 @@ public:
     }
     BaseChannel::changed(true);
   }
-};*/
+  };*/
 
 class MixDevType : public ChannelDevice<HalType, VirtBaseChannel<HalType, List0>, NUM_CHANNELS, List0> {
   public:
-  VirtChannel<HalType, DimmerChannelType , List0>  ch1;
-  //VirtChannel<HalType, SwChannel ,         MixDevList0>  ch2;
-  //VirtChannel<HalType, WeatherChannel,     MixDevList0>  ch3;
+    VirtChannel<HalType, DimmerChannelType , List0>  ch1;
+    //VirtChannel<HalType, SwChannel ,         MixDevList0>  ch2;
+    //VirtChannel<HalType, WeatherChannel,     MixDevList0>  ch3;
   public:
     typedef ChannelDevice<HalType, VirtBaseChannel<HalType, List0>, NUM_CHANNELS, List0> DeviceType;
 
@@ -136,7 +137,9 @@ class MixDevType : public ChannelDevice<HalType, VirtBaseChannel<HalType, List0>
     }
     virtual ~MixDevType () {}
 
-    DimmerChannelType&  dimmerChannel  (__attribute__((unused)) uint8_t ch) { return ch1; }
+    DimmerChannelType&  dimmerChannel  (__attribute__((unused)) uint8_t ch) {
+      return ch1;
+    }
     //SwChannel&          switchChannel  (                                  ) { return ch2; }
     //WeatherChannel&     weatherChannel (                                  ) { return ch3; }
 
@@ -149,47 +152,63 @@ class MixDevType : public ChannelDevice<HalType, VirtBaseChannel<HalType, List0>
 };
 
 class FAN {
-  uint8_t pin;
-  uint8_t last_value;
-public:
-  FAN () : pin(0), last_value(0) {}
-  ~FAN () {}
+    uint8_t pin;
+    uint8_t last_value;
+  public:
+    FAN () : pin(0), last_value(0) {}
+    ~FAN () {}
 
-  void init(uint8_t p) {
-    pin = p;
-    pinMode(pin,OUTPUT);
-  }
-  void set(uint8_t value) {
-    uint8_t pwm = 0;
-    DPRINT("SET ");DDECLN(value);
-    if (last_value == 0) {
-      analogWrite(pin,255); // give the motor a short full power pulse to start (for lower speeds)
-      //delay(250);
+    void init(uint8_t p) {
+      pin = p;
+      pinMode(pin, OUTPUT);
+#ifdef USE_25KHZ
+        //https://forum.arduino.cc/index.php?topic=415167.msg2859274#msg2859274
+        TCCR2A = 0;                               // TC2 Control Register A
+        TCCR2B = 0;                               // TC2 Control Register B
+        TIMSK2 = 0;                               // TC2 Interrupt Mask Register
+        TIFR2 = 0;                                // TC2 Interrupt Flag Register
+        TCCR2A |= (1 << COM2B1) | (1 << WGM21) | (1 << WGM20);  // OC2B cleared/set on match when up/down counting, fast PWM
+        TCCR2B |= (1 << WGM22) | (1 << CS21);     // prescaler 8
+        OCR2A = 200;                               // TOP overflow value (Hz)
+        OCR2B = 0;
+#endif
     }
-    pwm = value > 0 ? map(value, 1, 200, 32, 255) : 0;
-    last_value = value;
-    analogWrite(pin,pwm);
-  }
+    void set(uint8_t value) {
+#ifdef USE_25KHZ
+        OCR2B = value;
+#else
+        uint8_t pwm = 0;
+        DPRINT("SET "); DDECLN(value);
+        if (last_value == 0) {
+          analogWrite(pin, 255); // give the motor a short full power pulse to start (for lower speeds)
+          //delay(250);
+        }
+        pwm = value > 0 ? map(value, 1, 200, 32, 255) : 0;
+        last_value = value;
+        analogWrite(pin, pwm);
+      }
+#endif
+    }
 };
 
 HalType hal;
-MixDevType sdev(devinfo,0x20);
-DimmerControl<HalType,MixDevType,FAN> control(sdev);
+MixDevType sdev(devinfo, 0x20);
+DimmerControl<HalType, MixDevType, FAN> control(sdev);
 ConfigToggleButton<MixDevType> cfgBtn(sdev);
 
 void setup () {
-  DINIT(57600,ASKSIN_PLUS_PLUS_IDENTIFIER);
-  if( control.init(hal,FAN_PIN) ) {
+  DINIT(57600, ASKSIN_PLUS_PLUS_IDENTIFIER);
+  if ( control.init(hal, FAN_PIN) ) {
     sdev.channel(1).peer(cfgBtn.peer());
   }
-  buttonISR(cfgBtn,CONFIG_BUTTON_PIN);
+  buttonISR(cfgBtn, CONFIG_BUTTON_PIN);
   sdev.initDone();
 }
 
 void loop() {
   bool worked = hal.runready();
   bool poll = sdev.pollRadio();
-  if( worked == false && poll == false ) {
+  if ( worked == false && poll == false ) {
     hal.activity.savePower<Idle<true> >(hal);
   }
 }

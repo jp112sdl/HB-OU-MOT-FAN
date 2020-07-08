@@ -12,27 +12,33 @@
 #include <AskSinPP.h>
 #include <LowPower.h>
 #include <Register.h>
-//#include <sensors/Si7021.h>
 
 #include <Dimmer.h>
-//#include <Switch.h>
 
 #define LED_PIN           4
 #define CONFIG_BUTTON_PIN 8
-#define FAN_PIN           9 // 9 on 644PA (Bobuino Pinout) or 3 on 328P
+
 #define USE_25KHZ
+#define FAN_PIN              3 // 9 on 644PA (Bobuino Pinout) or 3 on 328P
+#define TACHO_PIN            6 // input pin for tacho signal; set to 0 when using 3-pin fan
+#define PWR_PIN              9 // output pin to turn off a 4-pin fan; if unused (i.e. for 3-pin fan) set to 0
+#define RPM_MEASURE_INTERVAL 5 // check rpm every 5 seconds
 
 #define PEERS_PER_CHANNEL    4
-#define WEATHER_MSG_INTERVAL 180
-
-#define NUM_CHANNELS         1
 
 using namespace as;
 
+volatile uint32_t pulsecount = 0;
+uint32_t currentPWMvalue     = 0;
+
 const struct DeviceInfo PROGMEM devinfo = {
-  {0xf3, 0x49, 0x01},     // Device ID
+  {0xf3, 0x60, 0x01},     // Device ID
   "JPFAN00001",           // Device Serial
+#if TACHO_PIN == 0
   {0xf3, 0x49},           // Device Model
+#else
+  {0xf3, 0x4f},           // Device Model
+#endif
   0x01,                   // Firmware Version
   as::DeviceType::Dimmer, // Device Type
   {0x01, 0x00}            // Info Bytes
@@ -42,153 +48,190 @@ typedef AvrSPI<10, 11, 12, 13> SPIType;
 typedef Radio<SPIType, 2> RadioType;
 typedef StatusLed<LED_PIN> LedType;
 typedef AskSin<LedType, NoBattery, RadioType> HalType;
-
-/*DEFREGISTER(Reg0,DREG_INTKEY,MASTERID_REGS,DREG_TRANSMITTRYMAX)
-  class MixDevList0 : public RegList0<Reg0> {
-  public:
-  MixDevList0(uint16_t addr) : RegList0<Reg0>(addr) {}
-  void defaults () {
-    clear();
-    transmitDevTryMax(6);
-  }
-  };*/
-
 typedef DimmerChannel<HalType, PEERS_PER_CHANNEL, List0> DimmerChannelType;
 
-/*class WeatherEventMsg : public Message {
-  public:
-    void init(uint8_t msgcnt, int16_t temp, uint8_t humidity, bool batlow) {
-      uint8_t t1 = (temp >> 8) & 0x7f;
-      uint8_t t2 = temp & 0xff;
-      if ( batlow == true ) {
-        t1 |= 0x80; // set bat low bit
-      }
-      Message::init(0xc, msgcnt, 0x70, BIDI | WKMEUP, t1, t2);
-      pload[0] = humidity;
-    }
-  };
+class FAN {
+  uint8_t pwmpin;
+  uint8_t pwrpin;
+public:
+  FAN () : pwmpin(0), pwrpin(0) {}
+  ~FAN () {}
 
-  class WeatherChannel : public Channel<HalType, List1, EmptyList, List4, PEERS_PER_CHANNEL, MixDevList0>, public Alarm {
-    WeatherEventMsg msg;
-    int16_t         temp;
-    uint8_t         humidity;
-    Si7021  sensor;
-  public:
-    WeatherChannel () : Channel(), Alarm(5), temp(0), humidity(0) {}
-    virtual ~WeatherChannel () {}
+  void init(uint8_t p) {
+    pwmpin = p;
+    pinMode(pwmpin, OUTPUT);
 
-    void measure () {
-      DPRINT("Measure...\n");
-      sensor.measure();
-      temp = sensor.temperature();
-      humidity = sensor.humidity();
-      DPRINT(F("T/H = "));DDEC(temp);DPRINT(F("/"));DDECLN(humidity);
+#ifdef USE_25KHZ
+    //https://forum.arduino.cc/index.php?topic=415167.msg2859274#msg2859274
+    TCCR2A = 0;                               // TC2 Control Register A
+    TCCR2B = 0;                               // TC2 Control Register B
+    TIMSK2 = 0;                               // TC2 Interrupt Mask Register
+    TIFR2 = 0;                                // TC2 Interrupt Flag Register
+    TCCR2A |= (1 << COM2B1) | (1 << WGM21) | (1 << WGM20);  // OC2B cleared/set on match when up/down counting, fast PWM
+    TCCR2B |= (1 << WGM22) | (1 << CS21);     // prescaler 8
+    OCR2A = 200;                               // TOP overflow value (Hz)
+    OCR2B = 0;
+#endif
+
+#if PWR_PIN > 0
+    pinMode(PWR_PIN, OUTPUT);
+    digitalWrite(PWR_PIN, LOW);
+#endif
+  }
+
+  void set(uint8_t value) {
+#if PWR_PIN > 0
+    digitalWrite(PWR_PIN, value == 0 ? LOW : HIGH);
+#endif
+
+#ifdef USE_25KHZ
+    OCR2B = value;
+#else
+    uint8_t pwm = 0;
+    DPRINT("SET "); DDECLN(value);
+    if (currentPWMvalue == 0) {
+      analogWrite(pwmpin, 255); // give the motor a short full power pulse to start (for lower speeds)
+      //delay(250);
     }
+    pwm = value > 0 ? map(value, 1, 200, 32, 255) : 0;
+    analogWrite(pwmpin, pwm);
+#endif
+    currentPWMvalue = value;
+  }
+};
+
+class RPMMsg : public Message {
+public:
+  void init(uint8_t msgcnt, int16_t rpm) {
+    Message::init(0xb, msgcnt, 0x53, BCAST, (rpm >> 8), rpm);
+  }
+};
+
+DEFREGISTER(Reg1, 0x94, 0x95)
+class RPMList1 : public RegList1<Reg1> {
+public:
+  RPMList1 (uint16_t addr) : RegList1<Reg1>(addr) {}
+
+  bool rpmErrorMin (uint16_t value) const {
+    return this->writeRegister(0x94, (value >> 8) & 0xff) && this->writeRegister(0x95, value & 0xff);
+  }
+  uint16_t rpmErrorMin () const {
+    return (this->readRegister(0x94, 0) << 8) + this->readRegister(0x95, 0);
+  }
+  void defaults () {
+    clear();
+    rpmErrorMin(100);
+  }
+};
+
+class RPMChannel : public Channel<HalType, RPMList1, EmptyList, List4, PEERS_PER_CHANNEL, List0>, public Alarm {
+private:
+    static void tachoISR() { pulsecount++; }
+    RPMMsg    msg;
+    uint16_t  rpm;
+    uint16_t  rpmLast;
+    uint8_t   failcnt;
+    uint8_t   measurecnt;
+    bool      rpmErrorState;
+    bool      rpmErrorStateLast;
+    uint16_t  rpmErrorMinRPM;
+  public:
+    RPMChannel () : Channel(), Alarm(RPM_MEASURE_INTERVAL), rpm(0), rpmLast(0), failcnt(0),measurecnt(0), rpmErrorState(false), rpmErrorStateLast(false), rpmErrorMinRPM(0) {}
+    virtual ~RPMChannel () {}
 
     virtual void trigger (__attribute__ ((unused)) AlarmClock& clock) {
-      tick = seconds2ticks(WEATHER_MSG_INTERVAL);
-      measure();
-      msg.init(device().nextcount(), temp, humidity, false);
-      device().broadcastEvent(msg);
-      clock.add(*this);
-    }
+      //calculate the rpm
+      uint32_t rpm = pulsecount * (60 / RPM_MEASURE_INTERVAL);
 
-    void setup(Device<HalType, MixDevList0>* dev, uint8_t number, uint16_t addr) {
-      Channel::setup(dev, number, addr);
-      sensor.init();
+      DPRINT("PWR / RPM = ");DDEC(currentPWMvalue);DPRINT("/");DDECLN(rpm);
+
+      // RPM error handling is active AND fan power is > 0%  AND current rpm is below threshold (rpmErrorMinRPM)
+      if (rpmErrorMinRPM > 0 && currentPWMvalue > 0 && rpm < rpmErrorMinRPM) {
+        //let's check at least 2 times
+        if (failcnt < 2) failcnt++;
+      } else {
+        //if everything is ok, we can reset the fail counter and the rpmError
+        failcnt = 0;
+        rpmErrorState = false;
+      }
+
+      //after two checks, the failure still persists
+      if (failcnt == 2) {
+        msg.init(device().nextcount(), rpm);
+        device().broadcastEvent(msg);
+        rpmErrorState = true;
+      }
+
+      //if the error state has changed (from true->false or false->true), send an info message to the ccu
+      if (rpmErrorState != rpmErrorStateLast) {
+        rpmErrorStateLast = rpmErrorState;
+        DPRINT("ALARM ");DDECLN(rpmErrorState);
+        this->changed(true);
+      }
+
+      //only send rpm value if it differs at least 200rpm
+      //or if we measured at least 5 minutes
+      if ( abs( (int16_t)rpm - (int16_t)rpmLast ) > 200 || measurecnt > (300 / RPM_MEASURE_INTERVAL)) {
+        measurecnt = 0;
+        rpmLast = rpm;
+        msg.init(device().nextcount(), rpm);
+        device().broadcastEvent(msg);
+      }
+      measurecnt++;
+
+      //at least, set the next timer an reset the tacho pulsecounter
+      Alarm::set(seconds2ticks(RPM_MEASURE_INTERVAL));
+      pulsecount = 0;
       sysclock.add(*this);
     }
 
+    void setup(Device<HalType, List0>* dev, uint8_t number, uint16_t addr) {
+      Channel::setup(dev, number, addr);
+      // if the TACHO_PIN is not used, we won't init the pin or start the timer
+      if (TACHO_PIN > 0) {
+        pinMode(TACHO_PIN, INPUT);
+        if( digitalPinToInterrupt(TACHO_PIN) == NOT_AN_INTERRUPT )
+          enableInterrupt(TACHO_PIN,tachoISR,FALLING);
+        else
+          attachInterrupt(digitalPinToInterrupt(TACHO_PIN),tachoISR,FALLING);
+
+        sysclock.add(*this);
+      }
+    }
+
+    void configChanged() {
+      rpmErrorMinRPM = this->getList1().rpmErrorMin();
+      DPRINT(F("RPM Error min. = ")); DDECLN(rpmErrorMinRPM);
+    }
+
     uint8_t status () const { return 0; }
-    uint8_t flags  () const { return 0; }
-  };*/
-
-/*class SwChannel : public SwitchChannel<HalType,PEERS_PER_CHANNEL,MixDevList0> {
-  public:
-  SwChannel () {};
-  virtual ~SwChannel () {};
-
-  void init () {
-    BaseChannel::changed(true);
-  }
-  virtual void switchState(__attribute__((unused)) uint8_t oldstate,uint8_t newstate,__attribute__((unused)) uint32_t delay) {
-    if ( newstate == AS_CM_JT_ON ) {
-      DPRINTLN("SWITCH TURN ON");
+    uint8_t flags  () const {
+      return rpmErrorState == true ? 0x01 << 1 : 0;
     }
-    else if ( newstate == AS_CM_JT_OFF ) {
-      DPRINTLN("SWITCH TURN OFF");
-    }
-    BaseChannel::changed(true);
-  }
-  };*/
+};
 
-class MixDevType : public ChannelDevice<HalType, VirtBaseChannel<HalType, List0>, NUM_CHANNELS, List0> {
+class MixDevType : public ChannelDevice<HalType, VirtBaseChannel<HalType, List0>, 2, List0> {
   public:
     VirtChannel<HalType, DimmerChannelType , List0>  ch1;
-    //VirtChannel<HalType, SwChannel ,         MixDevList0>  ch2;
-    //VirtChannel<HalType, WeatherChannel,     MixDevList0>  ch3;
+    VirtChannel<HalType, RPMChannel,         List0>  ch2;
   public:
-    typedef ChannelDevice<HalType, VirtBaseChannel<HalType, List0>, NUM_CHANNELS, List0> DeviceType;
+    typedef ChannelDevice<HalType, VirtBaseChannel<HalType, List0>, 2, List0> DeviceType;
 
     MixDevType (const DeviceInfo& info, uint16_t addr) : DeviceType(info, addr) {
       DeviceType::registerChannel(ch1, 1);
-      //DeviceType::registerChannel(ch2, 2);
-      //DeviceType::registerChannel(ch3, 3);
+      DeviceType::registerChannel(ch2, 2);
     }
     virtual ~MixDevType () {}
 
     DimmerChannelType&  dimmerChannel  (__attribute__((unused)) uint8_t ch) {
       return ch1;
     }
-    //SwChannel&          switchChannel  (                                  ) { return ch2; }
-    //WeatherChannel&     weatherChannel (                                  ) { return ch3; }
+    RPMChannel& rpmChannel () {
+      return ch2;
+    }
 
     static int const channelCount = 1;
     static int const virtualCount = 1;
-
-    virtual void configChanged () {
-      DeviceType::configChanged();
-    }
-};
-
-class FAN {
-    uint8_t pin;
-    uint8_t last_value;
-  public:
-    FAN () : pin(0), last_value(0) {}
-    ~FAN () {}
-
-    void init(uint8_t p) {
-      pin = p;
-      pinMode(pin, OUTPUT);
-#ifdef USE_25KHZ
-        //https://forum.arduino.cc/index.php?topic=415167.msg2859274#msg2859274
-        TCCR2A = 0;                               // TC2 Control Register A
-        TCCR2B = 0;                               // TC2 Control Register B
-        TIMSK2 = 0;                               // TC2 Interrupt Mask Register
-        TIFR2 = 0;                                // TC2 Interrupt Flag Register
-        TCCR2A |= (1 << COM2B1) | (1 << WGM21) | (1 << WGM20);  // OC2B cleared/set on match when up/down counting, fast PWM
-        TCCR2B |= (1 << WGM22) | (1 << CS21);     // prescaler 8
-        OCR2A = 200;                               // TOP overflow value (Hz)
-        OCR2B = 0;
-#endif
-    }
-    void set(uint8_t value) {
-#ifdef USE_25KHZ
-        OCR2B = value;
-#else
-        uint8_t pwm = 0;
-        DPRINT("SET "); DDECLN(value);
-        if (last_value == 0) {
-          analogWrite(pin, 255); // give the motor a short full power pulse to start (for lower speeds)
-          //delay(250);
-        }
-        pwm = value > 0 ? map(value, 1, 200, 32, 255) : 0;
-        last_value = value;
-        analogWrite(pin, pwm);
-      }
-#endif
-    }
 };
 
 HalType hal;
@@ -198,9 +241,10 @@ ConfigToggleButton<MixDevType> cfgBtn(sdev);
 
 void setup () {
   DINIT(57600, ASKSIN_PLUS_PLUS_IDENTIFIER);
-  if ( control.init(hal, FAN_PIN) ) {
+  if ( control.init(hal, FAN_PIN, PWR_PIN) ) {
     sdev.channel(1).peer(cfgBtn.peer());
   }
+  sdev.channel(2).changed(true);
   buttonISR(cfgBtn, CONFIG_BUTTON_PIN);
   sdev.initDone();
 }
@@ -209,6 +253,6 @@ void loop() {
   bool worked = hal.runready();
   bool poll = sdev.pollRadio();
   if ( worked == false && poll == false ) {
-    hal.activity.savePower<Idle<true> >(hal);
+   // hal.activity.savePower<Idle<true> >(hal);
   }
 }

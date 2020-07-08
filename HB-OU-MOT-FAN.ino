@@ -19,7 +19,7 @@
 #define CONFIG_BUTTON_PIN 8
 
 #define USE_25KHZ
-#define FAN_PIN              3 // 9 on 644PA (Bobuino Pinout) or 3 on 328P
+#define PWM_PIN              3 // 9 on 644PA (Bobuino Pinout) or 3 on 328P
 #define TACHO_PIN            6 // input pin for tacho signal; set to 0 when using 3-pin fan
 #define PWR_PIN              9 // output pin to turn off a 4-pin fan; if unused (i.e. for 3-pin fan) set to 0
 #define RPM_MEASURE_INTERVAL 5 // check rpm every 5 seconds
@@ -241,7 +241,7 @@ ConfigToggleButton<MixDevType> cfgBtn(sdev);
 
 void setup () {
   DINIT(57600, ASKSIN_PLUS_PLUS_IDENTIFIER);
-  if ( control.init(hal, FAN_PIN, PWR_PIN) ) {
+  if ( control.init(hal, PWM_PIN, PWR_PIN) ) {
     sdev.channel(1).peer(cfgBtn.peer());
   }
   sdev.channel(2).changed(true);

@@ -20,7 +20,7 @@
 
 #define USE_25KHZ
 #define PWM_PIN              3 // 9 on 644PA (Bobuino Pinout) or 3 on 328P
-#define TACHO_PIN            6 // input pin for tacho signal; set to 0 when using 3-pin fan
+#define TACHO_PIN            6 // input pin for tacho signal; set to 0 when using 3-pin fan or rpm monitoring is not wanted
 #define PWR_PIN              9 // output pin to turn off a 4-pin fan; if unused (i.e. for 3-pin fan) set to 0
 #define RPM_MEASURE_INTERVAL 5 // check rpm every 5 seconds
 

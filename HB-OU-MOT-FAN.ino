@@ -3,6 +3,7 @@
 // 2016-10-31 papa Creative Commons - http://creativecommons.org/licenses/by-nc-sa/3.0/de/
 // 2020-07-01 papa Creative Commons - http://creativecommons.org/licenses/by-nc-sa/3.0/de/
 //- -----------------------------------------------------------------------------------------------------------------------
+// ci-test=yes board=328p aes=no
 
 // define this to read the device id, serial and device type from bootloader section
 // #define USE_OTA_BOOTLOADER
@@ -48,7 +49,7 @@ typedef AvrSPI<10, 11, 12, 13> SPIType;
 typedef Radio<SPIType, 2> RadioType;
 typedef StatusLed<LED_PIN> LedType;
 typedef AskSin<LedType, NoBattery, RadioType> HalType;
-typedef DimmerChannel<HalType, PEERS_PER_CHANNEL, List0> DimmerChannelType;
+typedef DimmerChannel<HalType, PEERS_PER_CHANNEL, DimmerList0> DimmerChannelType;
 
 class FAN {
   uint8_t pwmpin;
@@ -78,6 +79,8 @@ public:
     digitalWrite(PWR_PIN, LOW);
 #endif
   }
+
+  void param(uint8_t __attribute__ ((unused)) speedMultiplier, uint8_t __attribute__ ((unused)) characteristic) {}
 
   void set(uint8_t value) {
 #if PWR_PIN > 0
@@ -124,7 +127,7 @@ public:
   }
 };
 
-class RPMChannel : public Channel<HalType, RPMList1, EmptyList, List4, PEERS_PER_CHANNEL, List0>, public Alarm {
+class RPMChannel : public Channel<HalType, RPMList1, EmptyList, List4, PEERS_PER_CHANNEL, DimmerList0>, public Alarm {
 private:
     static void tachoISR() { pulsecount++; }
     RPMMsg    msg;
@@ -185,7 +188,7 @@ private:
       sysclock.add(*this);
     }
 
-    void setup(Device<HalType, List0>* dev, uint8_t number, uint16_t addr) {
+    void setup(Device<HalType, DimmerList0>* dev, uint8_t number, uint16_t addr) {
       Channel::setup(dev, number, addr);
       // if the TACHO_PIN is not used, we won't init the pin or start the timer
       if (TACHO_PIN > 0) {
@@ -210,12 +213,12 @@ private:
     }
 };
 
-class MixDevType : public ChannelDevice<HalType, VirtBaseChannel<HalType, List0>, 2, List0> {
+class MixDevType : public ChannelDevice<HalType, VirtBaseChannel<HalType, DimmerList0>, 2, DimmerList0> {
   public:
-    VirtChannel<HalType, DimmerChannelType , List0>  ch1;
-    VirtChannel<HalType, RPMChannel,         List0>  ch2;
+    VirtChannel<HalType, DimmerChannelType , DimmerList0>  ch1;
+    VirtChannel<HalType, RPMChannel,         DimmerList0>  ch2;
   public:
-    typedef ChannelDevice<HalType, VirtBaseChannel<HalType, List0>, 2, List0> DeviceType;
+    typedef ChannelDevice<HalType, VirtBaseChannel<HalType, DimmerList0>, 2, DimmerList0> DeviceType;
 
     MixDevType (const DeviceInfo& info, uint16_t addr) : DeviceType(info, addr) {
       DeviceType::registerChannel(ch1, 1);

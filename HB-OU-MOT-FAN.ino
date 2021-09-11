@@ -8,6 +8,8 @@
 // define this to read the device id, serial and device type from bootloader section
 // #define USE_OTA_BOOTLOADER
 
+#define HIDE_IGNORE_MSG
+
 #define EI_NOTEXTERNAL
 #include <EnableInterrupt.h>
 #include <AskSinPP.h>
@@ -23,7 +25,7 @@
 #define PWM_PIN              3 // 9 on 644PA (Bobuino Pinout) or 3 on 328P
 #define TACHO_PIN            6 // input pin for tacho signal; set to 0 when using 3-pin fan or rpm monitoring is not wanted
 #define PWR_PIN              9 // output pin to turn off a 4-pin fan; if unused (i.e. for 3-pin fan) set to 0
-#define RPM_MEASURE_INTERVAL 5 // check rpm every 5 seconds
+#define RPM_MEASURE_INTERVAL 10 // check rpm every 15 minutes
 
 #define PEERS_PER_CHANNEL    4
 
@@ -192,7 +194,7 @@ private:
       Channel::setup(dev, number, addr);
       // if the TACHO_PIN is not used, we won't init the pin or start the timer
       if (TACHO_PIN > 0) {
-        pinMode(TACHO_PIN, INPUT);
+        pinMode(TACHO_PIN, INPUT_PULLUP);
         if( digitalPinToInterrupt(TACHO_PIN) == NOT_AN_INTERRUPT )
           enableInterrupt(TACHO_PIN,tachoISR,FALLING);
         else
